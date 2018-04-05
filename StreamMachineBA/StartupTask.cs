@@ -52,7 +52,7 @@ namespace StreamMachineBA
             await listener.BindServiceNameAsync("8000");
             listener.ConnectionReceived += Listener_ConnectionReceived;
 
-            //timer = new Timer(SendStatusBeacon, null, TimeSpan.FromSeconds(0), TimeSpan.FromSeconds(10));
+            timer = new Timer(SendStatusBeacon, null, TimeSpan.FromSeconds(0), TimeSpan.FromSeconds(10));
 
             //
             // Once the asynchronous method(s) are done, close the deferral.
@@ -62,18 +62,22 @@ namespace StreamMachineBA
 
         private async void SendStatusBeacon(object status)
         {
-            var ds = new DatagramSocket();
-
-            using (var opS = await ds.GetOutputStreamAsync(new HostName("255.255.255.255"), "8377"))
+            using (var ds = new DatagramSocket())
             {
-                var myIp = await GetCurrentHostName();
-
-                if (myIp != null)
+                using (var opS = new DataWriter(await ds.GetOutputStreamAsync(new HostName("255.255.255.255"), "8377")))
                 {
-                    await opS.WriteAsync(Encoding.UTF8.GetBytes(myIp.ToString()).AsBuffer());
-                    Debug.WriteLine(myIp.ToString());
+                    var myIp = await GetCurrentHostName();
+
+                    if (myIp != null)
+                    {
+                        opS.WriteBuffer(Encoding.UTF8.GetBytes(myIp.ToString()).AsBuffer());
+                        await opS.StoreAsync();
+
+                        Debug.WriteLine(myIp.ToString());
+                    }
+                    await opS.FlushAsync();
+                    opS.DetachStream();
                 }
-                await opS.FlushAsync();
             }
         }
 
