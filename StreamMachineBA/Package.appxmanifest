@@ -23,6 +23,8 @@
       <Extensions>
         <Extension Category="windows.backgroundTasks" EntryPoint="StreamMachineBA.StartupTask">
           <BackgroundTasks>
+            <Task Type="general" />
+            <Task Type="timer" />
             <uap:Task Type="mediaProcessing" />
             <iot:Task Type="startup" />
           </BackgroundTasks>
@@ -33,6 +35,7 @@
   <Capabilities>
     <Capability Name="internetClient" />
     <Capability Name="internetClientServer" />
+    <Capability Name="privateNetworkClientServer" />
     <uap3:Capability Name="backgroundMediaPlayback" />
   </Capabilities>
 </Package>

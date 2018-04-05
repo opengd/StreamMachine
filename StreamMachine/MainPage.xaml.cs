@@ -1,30 +1,28 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
 using System.Linq;
+using System.Net;
 using System.Runtime.InteropServices.WindowsRuntime;
 using System.Text;
 using System.Threading.Tasks;
+using Windows.Data.Json;
 using Windows.Devices.Enumeration;
-using Windows.Foundation;
-using Windows.Foundation.Collections;
 using Windows.Media.Audio;
 using Windows.Media.Core;
 using Windows.Media.Devices;
 using Windows.Media.Playback;
 using Windows.Media.Render;
+using Windows.Networking;
 using Windows.Networking.Sockets;
+using Windows.Security.Cryptography;
 using Windows.Storage;
 using Windows.Storage.BulkAccess;
 using Windows.Storage.Search;
 using Windows.Storage.Streams;
+using Windows.System.Profile;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
-using Windows.UI.Xaml.Controls.Primitives;
-using Windows.UI.Xaml.Data;
-using Windows.UI.Xaml.Input;
-using Windows.UI.Xaml.Media;
 using Windows.UI.Xaml.Navigation;
 
 
@@ -42,6 +40,9 @@ namespace StreamMachine
         private AudioDeviceOutputNode deviceOutput;
 
         private MediaPlayer mediaPlayer;
+
+        //private Timer timer;
+        private StreamSocketListener listener;
 
         IReadOnlyList<FileInformation> fil;
 
@@ -62,17 +63,76 @@ namespace StreamMachine
             //await CreateAudioGraph();
             //await PlayMyMusic();
 
-            var listener = new StreamSocketListener();
+            listener = new StreamSocketListener();
             await listener.BindServiceNameAsync("8000");
             listener.ConnectionReceived += Listener_ConnectionReceived;
 
-            //
+            var timer = new System.Timers.Timer(10000);
+            timer.Elapsed += Timer_SendStatusBeacon;
+            timer.AutoReset = true;
+            timer.Enabled = true;
 
-            await AzureIoTHub.RegisterDirectMethodsAsync();
+            //timer = new Timer(SendStatusBeacon, null, TimeSpan.FromSeconds(0), TimeSpan.FromSeconds(10));
 
-
+            //await AzureIoTHub.RegisterDirectMethodsAsync();
 
             //ListenToIot();
+        }
+
+        private async void Timer_SendStatusBeacon(object sender, System.Timers.ElapsedEventArgs e)
+        {
+            using (var ds = new DatagramSocket())
+            {
+                using (var opS = new DataWriter(await ds.GetOutputStreamAsync(new HostName("255.255.255.255"), "8377")))
+                {
+                    var myIp = await GetCurrentHostName();
+
+                    if (myIp != null)
+                    {
+                        //HardwareToken packageSpecificToken;
+
+                        //packageSpecificToken = HardwareIdentification.GetPackageSpecificToken(Encoding.UTF8.GetBytes(string.Empty).AsBuffer());
+
+                        //var id = BitConverter.ToString(packageSpecificToken.Id.ToArray());
+
+                        var id = BitConverter.ToString(SystemIdentification.GetSystemIdForPublisher().Id.ToArray()).Replace("-", "");
+
+                        //var id = CryptographicBuffer.ConvertBinaryToString(BinaryStringEncoding.Utf16LE, packageSpecificToken.Id);
+
+                        //var dataReader = DataReader.FromBuffer(packageSpecificToken.Id);
+                        //var id = dataReader.ReadString(packageSpecificToken.Id.Length);
+                        //dataReader.Dispose();
+                        //var id = Encoding.UTF8.GetString(packageSpecificToken.Id., 0, packageSpecificToken.Id.ToArray().Length);
+
+                        var jsonStatus = new JsonObject
+                        {
+                            new KeyValuePair<string, IJsonValue>("id", JsonValue.CreateStringValue(id)),
+                            new KeyValuePair<string, IJsonValue>("IPAddress", JsonValue.CreateStringValue(myIp.ToString())),
+                            new KeyValuePair<string, IJsonValue>("mediaPlayer.PlaybackSession.PlaybackState", JsonValue.CreateStringValue(mediaPlayer.PlaybackSession.PlaybackState.ToString()))
+                        };
+
+                        //opS.WriteBuffer(Encoding.UTF8.GetBytes(myIp.ToString()).AsBuffer());
+                        opS.WriteBuffer(Encoding.UTF8.GetBytes(jsonStatus.Stringify()).AsBuffer());
+                        await opS.StoreAsync();
+
+                        Debug.WriteLine(jsonStatus.Stringify());
+                    }
+                    await opS.FlushAsync();
+                    opS.DetachStream();
+                }
+            }
+        }
+
+        private async Task<IPAddress> GetCurrentHostName()
+        {
+            if (!System.Net.NetworkInformation.NetworkInterface.GetIsNetworkAvailable())
+            {
+                return null;
+            }
+
+            var hosts = await Dns.GetHostEntryAsync(Dns.GetHostName());
+
+            return hosts.AddressList.FirstOrDefault(ip => ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
         }
 
         private async Task ListenToIot()
@@ -108,19 +168,18 @@ namespace StreamMachine
         {
             StringBuilder request = new StringBuilder();
 
-            using (IInputStream input = args.Socket.InputStream)
+            using (var input = new DataReader(args.Socket.InputStream))
             {
-                byte[] data = new byte[8192];
-                IBuffer buffer = data.AsBuffer();
+                input.InputStreamOptions = InputStreamOptions.Partial;
+
                 uint dataRead = 8192;
                 while (dataRead == 8192)
                 {
-                    await input.ReadAsync(buffer, 8192, InputStreamOptions.Partial);
-                    request.Append(Encoding.UTF8.GetString(data, 0, data.Length));
-                    dataRead = buffer.Length;
+                    var loaded = await input.LoadAsync(8192);
+                    var inbuf = input.ReadBuffer(loaded);
+                    request.Append(Encoding.UTF8.GetString(inbuf.ToArray(), 0, inbuf.ToArray().Length));
+                    dataRead = inbuf.Length;
                 }
-
-
             }
 
             var req = request.ToString();
@@ -136,36 +195,44 @@ namespace StreamMachine
 
             Debug.WriteLine(request.ToString());
 
-            string header = string.Format("HTTP/1.1 200 OK\r\n" +
+            string msg = "OK";
+
+            string header = "HTTP/1.1 200 OK\r\n" +
                               "Content-Type: text/html\r\n" +
                               "Date: " + DateTime.Now.ToString("R") + "\r\n" +
                               "Server: IotPlayMusic/1.0\r\n" +
-                              "Content-Length: 2\r\n" +
+                              "Content-Length: " + msg.Length + "\r\n" +
                               "Connection: close\r\n\r\n" +
-                              "OK");
+                              msg;
 
             Debug.WriteLine(header);
             //var buf = Encoding.UTF8.GetBytes("OK").AsBuffer();
 
             var buf = Encoding.UTF8.GetBytes(header).AsBuffer();
 
-            using (IOutputStream output = args.Socket.OutputStream)
+            using (var output = new DataWriter(args.Socket.OutputStream))
             {
-                await output.WriteAsync(buf);
+                output.WriteBuffer(buf);
+                await output.StoreAsync();
+                output.DetachStream();
 
-                await output.FlushAsync();
+                //await output.WriteAsync(buf);
+
+                //await output.FlushAsync();
             }
 
+            //args.Socket.Dispose();
         }
 
         protected override void OnNavigatedFrom(NavigationEventArgs e)
         {
             // Destroy the graph if the page is naviated away from
 
-            if (graph != null)
-            {
-                graph.Dispose();
-            }
+            graph?.Dispose();
+
+            mediaPlayer?.Dispose();
+
+            listener?.Dispose();
         }
 
         private void MediaPlayerElement_Loaded(object sender, RoutedEventArgs e)
