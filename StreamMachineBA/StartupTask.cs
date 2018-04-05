@@ -52,7 +52,7 @@ namespace StreamMachineBA
             await listener.BindServiceNameAsync("8000");
             listener.ConnectionReceived += Listener_ConnectionReceived;
 
-            timer = new Timer(SendStatusBeacon, null, TimeSpan.FromSeconds(0), TimeSpan.FromSeconds(10));
+            //timer = new Timer(SendStatusBeacon, null, TimeSpan.FromSeconds(0), TimeSpan.FromSeconds(10));
 
             //
             // Once the asynchronous method(s) are done, close the deferral.
@@ -130,21 +130,23 @@ namespace StreamMachineBA
 
         private async void Listener_ConnectionReceived(StreamSocketListener sender, StreamSocketListenerConnectionReceivedEventArgs args)
         {
+            
             StringBuilder request = new StringBuilder();
 
-            using (IInputStream input = args.Socket.InputStream)
+            using (var input = new DataReader(args.Socket.InputStream))
             {
-                byte[] data = new byte[8192];
-                IBuffer buffer = data.AsBuffer();
+                input.InputStreamOptions = InputStreamOptions.Partial;
+
                 uint dataRead = 8192;
                 while (dataRead == 8192)
                 {
-                    await input.ReadAsync(buffer, 8192, InputStreamOptions.Partial);
-                    request.Append(Encoding.UTF8.GetString(data, 0, data.Length));
-                    dataRead = buffer.Length;
+                    var loaded = await input.LoadAsync(8192);
+                    var inbuf = input.ReadBuffer(loaded);
+                    request.Append(Encoding.UTF8.GetString(inbuf.ToArray(), 0, inbuf.ToArray().Length));
+                    dataRead = inbuf.Length;
                 }
             }
-
+            
             var req = request.ToString();
 
             if (req.ToLower().Contains("play"))
@@ -155,28 +157,39 @@ namespace StreamMachineBA
             {
                 StopMusic();
             }
-
+            
             Debug.WriteLine(request.ToString());
+            
+            string msg = "OK";
 
-            string header = string.Format("HTTP/1.1 200 OK\r\n" +
+            string header = "HTTP/1.1 200 OK\r\n" +
                               "Content-Type: text/html\r\n" +
                               "Date: " + DateTime.Now.ToString("R") + "\r\n" +
                               "Server: IotPlayMusic/1.0\r\n" +
-                              "Content-Length: 2\r\n" +
+                              "Content-Length: " + msg.Length + "\r\n" +
                               "Connection: close\r\n\r\n" +
-                              "OK");
+                              msg;
 
             Debug.WriteLine(header);
             //var buf = Encoding.UTF8.GetBytes("OK").AsBuffer();
 
             var buf = Encoding.UTF8.GetBytes(header).AsBuffer();
 
-            using (IOutputStream output = args.Socket.OutputStream)
+            using (var output = new DataWriter(args.Socket.OutputStream))
             {
-                await output.WriteAsync(buf);
+                output.WriteBuffer(buf);
+                await output.StoreAsync();
+                output.DetachStream();
 
-                await output.FlushAsync();
+                //await output.WriteAsync(buf);
+
+                //await output.FlushAsync();
+
+
             }
+
+            
+            //args.Socket.Dispose();
 
         }
     }
