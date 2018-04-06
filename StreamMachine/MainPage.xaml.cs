@@ -46,9 +46,52 @@ namespace StreamMachine
 
         IReadOnlyList<FileInformation> fil;
 
+        private string systemId;
+        public string SystemId
+        {
+            get
+            {
+                if(systemId == null)
+                {
+                    systemId = BitConverter.ToString(SystemIdentification.GetSystemIdForPublisher().Id.ToArray()).Replace("-", "");
+                }
+
+                return systemId;
+            }
+        }
+
+        public string TimestampFormat { get; } = "yyyy-MM-dd HH:mm:ss.ffff";
+
         public MainPage()
         {
             this.InitializeComponent();
+        }
+
+        private async Task<JsonObject> GetCurrentStatus()
+        {
+            var myIp = await GetCurrentHostName();
+            var jsonStatus = new JsonObject
+            {
+                new KeyValuePair<string, IJsonValue>("SystemId", JsonValue.CreateStringValue(SystemId)),
+                new KeyValuePair<string, IJsonValue>("IPAddress", JsonValue.CreateStringValue(myIp?.ToString() ?? string.Empty)),
+                new KeyValuePair<string, IJsonValue>("mediaPlayer.PlaybackSession.PlaybackState", JsonValue.CreateStringValue(mediaPlayer?.PlaybackSession.PlaybackState.ToString() ?? string.Empty)),
+                new KeyValuePair<string, IJsonValue>("mediaPlayer.Source", JsonValue.CreateStringValue((mediaPlayer?.Source as MediaSource)?.Uri.ToString() ?? string.Empty)),
+                new KeyValuePair<string, IJsonValue>("ResponseTimestamp", JsonValue.CreateStringValue(DateTime.Now.ToString(TimestampFormat)))
+            };
+            return jsonStatus;
+        }
+
+        private string GetHTTPResponse(JsonObject response)
+        {
+            string msg = response.Stringify();
+
+            return "HTTP/1.1 200 OK\r\n" +
+                    "Content-Type: text/html\r\n" +
+                    "Date: " + DateTime.Now.ToString("R") + "\r\n" +
+                    "Server: IotPlayMusic/1.0\r\n" +
+                    "Content-Length: " + msg.Length + "\r\n" +
+                    "Connection: close\r\n\r\n" + 
+                    msg;
         }
 
         protected override async void OnNavigatedTo(NavigationEventArgs e)
@@ -85,43 +128,17 @@ namespace StreamMachine
             {
                 using (var opS = new DataWriter(await ds.GetOutputStreamAsync(new HostName("255.255.255.255"), "8377")))
                 {
-                    var myIp = await GetCurrentHostName();
+                    opS.WriteBuffer(Encoding.UTF8.GetBytes((await GetCurrentStatus()).Stringify()).AsBuffer());
+                    await opS.StoreAsync();
 
-                    if (myIp != null)
-                    {
-                        //HardwareToken packageSpecificToken;
-
-                        //packageSpecificToken = HardwareIdentification.GetPackageSpecificToken(Encoding.UTF8.GetBytes(string.Empty).AsBuffer());
-
-                        //var id = BitConverter.ToString(packageSpecificToken.Id.ToArray());
-
-                        var id = BitConverter.ToString(SystemIdentification.GetSystemIdForPublisher().Id.ToArray()).Replace("-", "");
-
-                        //var id = CryptographicBuffer.ConvertBinaryToString(BinaryStringEncoding.Utf16LE, packageSpecificToken.Id);
-
-                        //var dataReader = DataReader.FromBuffer(packageSpecificToken.Id);
-                        //var id = dataReader.ReadString(packageSpecificToken.Id.Length);
-                        //dataReader.Dispose();
-                        //var id = Encoding.UTF8.GetString(packageSpecificToken.Id., 0, packageSpecificToken.Id.ToArray().Length);
-
-                        var jsonStatus = new JsonObject
-                        {
-                            new KeyValuePair<string, IJsonValue>("id", JsonValue.CreateStringValue(id)),
-                            new KeyValuePair<string, IJsonValue>("IPAddress", JsonValue.CreateStringValue(myIp.ToString())),
-                            new KeyValuePair<string, IJsonValue>("mediaPlayer.PlaybackSession.PlaybackState", JsonValue.CreateStringValue(mediaPlayer.PlaybackSession.PlaybackState.ToString()))
-                        };
-
-                        //opS.WriteBuffer(Encoding.UTF8.GetBytes(myIp.ToString()).AsBuffer());
-                        opS.WriteBuffer(Encoding.UTF8.GetBytes(jsonStatus.Stringify()).AsBuffer());
-                        await opS.StoreAsync();
-
-                        Debug.WriteLine(jsonStatus.Stringify());
-                    }
+                    //Debug.WriteLine(jsonStatus.Stringify());
                     await opS.FlushAsync();
                     opS.DetachStream();
                 }
             }
         }
+
+        
 
         private async Task<IPAddress> GetCurrentHostName()
         {
@@ -166,6 +183,8 @@ namespace StreamMachine
 
         private async void Listener_ConnectionReceived(StreamSocketListener sender, StreamSocketListenerConnectionReceivedEventArgs args)
         {
+            var requestTime = DateTime.Now.ToString(TimestampFormat);
+
             StringBuilder request = new StringBuilder();
 
             using (var input = new DataReader(args.Socket.InputStream))
@@ -195,20 +214,16 @@ namespace StreamMachine
 
             Debug.WriteLine(request.ToString());
 
-            string msg = "OK";
+            var response = await GetCurrentStatus();
 
-            string header = "HTTP/1.1 200 OK\r\n" +
-                              "Content-Type: text/html\r\n" +
-                              "Date: " + DateTime.Now.ToString("R") + "\r\n" +
-                              "Server: IotPlayMusic/1.0\r\n" +
-                              "Content-Length: " + msg.Length + "\r\n" +
-                              "Connection: close\r\n\r\n" +
-                              msg;
+            response.Add(new KeyValuePair<string, IJsonValue>("RequestTimestamp", JsonValue.CreateStringValue(requestTime)));
 
-            Debug.WriteLine(header);
+            string httpResponse = GetHTTPResponse(response);
+
+            Debug.WriteLine(httpResponse);
             //var buf = Encoding.UTF8.GetBytes("OK").AsBuffer();
 
-            var buf = Encoding.UTF8.GetBytes(header).AsBuffer();
+            var buf = Encoding.UTF8.GetBytes(httpResponse).AsBuffer();
 
             using (var output = new DataWriter(args.Socket.OutputStream))
             {
@@ -228,11 +243,11 @@ namespace StreamMachine
         {
             // Destroy the graph if the page is naviated away from
 
-            graph?.Dispose();
+            //graph?.Dispose();
 
-            mediaPlayer?.Dispose();
+            //mediaPlayer?.Dispose();
 
-            listener?.Dispose();
+            //listener?.Dispose();
         }
 
         private void MediaPlayerElement_Loaded(object sender, RoutedEventArgs e)
